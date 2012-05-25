@@ -334,6 +334,15 @@ class NoisyAutoEncoder(Autoencoder):
         hidden = super(NoisyAutoEncoder, self)._hidden_activation(x)
         return hidden * self.corruptor(hidden) / self.corruptor.corruption_level
 
+    def test_encode(self, inputs):
+
+        if isinstance(inputs, tensor.Variable):
+            return super(NoisyAutoEncoder, self)._hidden_activation(inputs)
+        else:
+            return [self.encode(v) for v in inputs]
+
+
+
 class DenoisingAutoencoder(Autoencoder):
     """
     A denoising autoencoder learns a representation of the input by
