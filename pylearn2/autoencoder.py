@@ -19,7 +19,7 @@ from pylearn2.space import VectorSpace
 theano.config.warn.sum_div_dimshuffle_bug = False
 
 if 0:
-    print 'WARNING: using SLOW rng'
+    print 'WARNI NG: using SLOW rng'
     RandomStreams = tensor.shared_randomstreams.RandomStreams
 else:
     import theano.sandbox.rng_mrg
@@ -34,7 +34,7 @@ class Autoencoder(Block, Model):
     much of the necessary functionality and override what they need.
     """
     def __init__(self, nvis, nhid, act_enc, act_dec,
-                 tied_weights=False, irange=1e-3, rng=9001):
+                 tied_weights=False, irange=1e-3 , rng=9001):
         """
         Allocate an autoencoder object.
 
@@ -312,6 +312,28 @@ class Autoencoder(Block, Model):
         return self.encode(inputs)
 
 
+class NoisyAutoEncoder(Autoencoder):
+
+    def __init__(self, corruptor, nvis, nhid, act_enc, act_dec,
+            tied_weights = False, irange=1e-3, rng=9001):
+
+        super(NoisyAutoEncoder, self).__init__(
+        nvis,
+        nhid,
+        act_enc,
+        act_dec,
+        tied_weights,
+        irange,
+        rng)
+
+        self.corruptor = corruptor
+
+
+    def _hidden_activation(self, x):
+
+        hidden = super(NoisyAutoEncoder, self)._hidden_activation(x)
+        return hidden * self.corruptor(hidden) / self.corruptor.corruption_level
+
 class DenoisingAutoencoder(Autoencoder):
     """
     A denoising autoencoder learns a representation of the input by
@@ -365,7 +387,7 @@ class DenoisingAutoencoder(Autoencoder):
             reconstructed minibatch(es) after corruption and encoding/decoding.
         """
         corrupted = self.corruptor(inputs)
-        return super(DenoisingAutoencoder, self).reconstruct(corrupted)
+        return super(DenoisingAutoencoder, self). reconstruct(corrupted)
 
 
 class ContractiveAutoencoder(Autoencoder):

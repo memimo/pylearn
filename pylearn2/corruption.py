@@ -107,6 +107,44 @@ class BinomialCorruptor(Corruptor):
         else:
             return [self._corrupt(inp) for inp in inputs]
 
+class BinomialNoise(Corruptor):
+    """
+    A binomial corruptor sets inputs to 0 with probability
+    0 < `corruption_level` < 1.
+    """
+    def _corrupt(self, x):
+        return self.s_rng.binomial(
+            size=x.shape,
+            n=1,
+            p=self.corruption_level,
+            dtype=theano.config.floatX
+        )
+
+    def __call__(self, inputs):
+        """
+        (Symbolically) corrupt the inputs with a binomial (masking) noise.
+
+        Parameters
+        ----------
+        inputs : tensor_like, or list of tensor_likes
+            Theano symbolic(s) representing a (list of) (mini)batch of inputs
+            to be corrupted, with the first dimension indexing training
+            examples and the second indexing data dimensions.
+
+        Returns
+        -------
+        corrupted : tensor_like
+            Theano symbolic representing the corresponding corrupted inputs,
+            where individual inputs have been masked with independent
+            probability equal to `self.corruption_level`.
+        """
+        if isinstance(inputs, tensor.Variable):
+            return self._corrupt(inputs)
+        else:
+            return [self._corrupt(inp) for inp in inputs]
+
+
+
 
 class GaussianCorruptor(Corruptor):
     """
