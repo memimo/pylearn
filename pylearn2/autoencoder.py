@@ -314,7 +314,8 @@ class Autoencoder(Block, Model):
 
 class NoisyAutoEncoder(Autoencoder):
 
-    def __init__(self, corruptor, nvis, nhid, act_enc, act_dec,
+    def __init__(self, input_corruptor, hidden_corruptor,
+            nvis, nhid, act_enc, act_dec,
             tied_weights = False, irange=1e-3, rng=9001):
 
         super(NoisyAutoEncoder, self).__init__(
@@ -326,13 +327,13 @@ class NoisyAutoEncoder(Autoencoder):
         irange,
         rng)
 
-        self.corruptor = corruptor
-
+        self.input_corruptor = input_corruptor
+        self.hidden_corruptor = hidden_corruptor
 
     def _hidden_activation(self, x):
 
         hidden = super(NoisyAutoEncoder, self)._hidden_activation(x)
-        return hidden * self.corruptor(hidden) / self.corruptor.corruption_level
+        return self.hidden_corruptor(hidden)
 
     def test_encode(self, inputs):
 
@@ -340,6 +341,28 @@ class NoisyAutoEncoder(Autoencoder):
             return super(NoisyAutoEncoder, self)._hidden_activation(inputs)
         else:
             return [self.encode(v) for v in inputs]
+
+    def reconstruct(self, inputs):
+        """
+        Reconstruct the inputs after corrupting and mapping through the
+        encoder and decoder.
+
+        Parameters
+        ----------
+        inputs : tensor_like or list of tensor_likes
+            Theano symbolic (or list thereof) representing the input
+            minibatch(es) to be corrupted and reconstructed. Assumed to be
+            2-tensors, with the first dimension indexing training examples and
+            the second indexing data dimensions.
+
+        Returns
+        -------
+        reconstructed : tensor_like or list of tensor_like
+            Theano symbolic (or list thereof) representing the corresponding
+            reconstructed minibatch(es) after corruption and encoding/decoding.
+        """
+        corrupted = self.input_corruptor(inputs)
+        return super(NoisyAutoEncoder, self).reconstruct(corrupted)
 
 
 
@@ -396,7 +419,7 @@ class DenoisingAutoencoder(Autoencoder):
             reconstructed minibatch(es) after corruption and encoding/decoding.
         """
         corrupted = self.corruptor(inputs)
-        return super(DenoisingAutoencoder, self). reconstruct(corrupted)
+        return super(DenoisingAutoencoder, self).reconstruct(corrupted)
 
 
 class ContractiveAutoencoder(Autoencoder):

@@ -107,18 +107,20 @@ class BinomialCorruptor(Corruptor):
         else:
             return [self._corrupt(inp) for inp in inputs]
 
-class BinomialNoise(Corruptor):
+
+class BinomialCorruptorScaled(Corruptor):
     """
     A binomial corruptor sets inputs to 0 with probability
     0 < `corruption_level` < 1.
     """
     def _corrupt(self, x):
+        scale = self.corruption_level if self.corruption_level != 0 else 1
         return self.s_rng.binomial(
             size=x.shape,
             n=1,
-            p=self.corruption_level,
+            p=1 - self.corruption_level,
             dtype=theano.config.floatX
-        )
+        ) * x / scale
 
     def __call__(self, inputs):
         """
@@ -142,7 +144,6 @@ class BinomialNoise(Corruptor):
             return self._corrupt(inputs)
         else:
             return [self._corrupt(inp) for inp in inputs]
-
 
 
 
