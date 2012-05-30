@@ -10,8 +10,8 @@ class TFD(dense_design_matrix.DenseDesignMatrix):
 
     mapper = {'unlabeled': 0, 'train': 1, 'valid': 2, 'test': 3}
 
-    def __init__(self, which_set, fold = 0, image_size = 48, 
-                 example_range = None, center = False, 
+    def __init__(self, which_set, fold = 0, image_size = 48,
+                 example_range = None, center = False,
                  shuffle=False, rng=None, seed=132987):
         """
         Creates a DenseDesignMatrix object for the Toronto Face Dataset.
@@ -54,7 +54,7 @@ class TFD(dense_design_matrix.DenseDesignMatrix):
             rng = rng if rng else np.random.RandomState(seed)
             rand_idx = rng.permutation(len(data_x))
             data_x = data_x[rand_idx]
- 
+
         # get labels
         if which_set != 'unlabeled':
             data_y = data['labs_ex'][set_indices]
