@@ -314,6 +314,23 @@ class ExamplewiseAddScaleTransform(Block):
                                   multiply_first=not self._multiply_first)
 
 
+class Scale(ExamplewisePreprocessor):
+    def __init__(self, scale):
+        self._scale = scale
+        assert scale != 0
+
+    def apply(self, dataset, can_fit):
+        X = dataset.get_design_matrix()
+        X /= self._scale
+        dataset.set_design_matrix(X)
+
+    def as_block(self):
+        if self._scale is None:
+            raise  ValueError("can't convert %s to block without fitting"
+                              % self.__class__.__name__)
+        return ExamplewiseAddScaleTransform(multiply= 1./self._scale)
+
+
 class RemoveMean(ExamplewisePreprocessor):
     """
     Subtracts the mean along a given axis, or from every element

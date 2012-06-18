@@ -311,6 +311,12 @@ class Autoencoder(Block, Model):
         """
         return self.encode(inputs)
 
+    def get_weights(self, borrow = False):
+
+        return self.weights.get_value(borrow = borrow)
+
+    def get_weights_format(self):
+        return ['v', 'h']
 
 class NoisyAutoEncoder(Autoencoder):
 

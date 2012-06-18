@@ -12,6 +12,6 @@ rescale = True
 if len(sys.argv) > 2:
 	rescale = eval(sys.argv[2])
 
-pv = get_weights_report.get_weights_report(path, rescale)
+pv = get_weights_report.get_weights_report(model_path = path)
 
 pv.save(sys.argv[1]+'.png')
