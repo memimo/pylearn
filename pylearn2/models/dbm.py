@@ -28,6 +28,7 @@ from pylearn2.models.s3c import full_min
 from pylearn2.models.s3c import full_max
 from theano.printing import min_informative_str
 from theano.printing import Print
+from pylearn2.space import VectorSpace
 from scipy import io
 
 class Sampler:
@@ -51,7 +52,10 @@ class DBM(Model):
                         negative_chains = 0,
                        inference_procedure = None,
                        monitor_params = False,
+                       sampling_steps = 5,
                        num_classes = 0,
+                       init_beta = None,
+                       min_beta = None,
                        print_interval = 10000):
         """
             rbms: list of rbms to stack
@@ -72,7 +76,10 @@ class DBM(Model):
                         from the data
         """
 
-        self.sampling_steps = 5
+        self.init_beta = init_beta
+        self.min_beta = min_beta
+
+        self.sampling_steps = sampling_steps
         self.monitor_params = monitor_params
 
         self.use_cd = use_cd
@@ -103,7 +110,6 @@ class DBM(Model):
 
         self.inference_procedure = inference_procedure
         self.inference_procedure.register_model(self)
-        self.autonomous = False
         if self.inference_procedure.autonomous:
             raise NotImplementedError("No such thing as an autonomous DBM yet")
 
@@ -127,10 +133,25 @@ class DBM(Model):
 
         if self.num_classes > 0:
             self.bias_class = sharedX(np.zeros((self.num_classes,)), name = 'bias_class')
-            self.W_class = sharedX( .001 * self.rng.randn((self.rbms[-1].nhid, self.num_classes)),
+            nhid = self.bias_hid[-1].get_value().shape[0]
+            self.W_class = sharedX( .001 * self.rng.randn(nhid, self.num_classes),
                                     name = 'W_class')
 
         self.redo_everything()
+
+
+    def get_weights(self):
+        x = raw_input('which weights?')
+        assert x in ['0','1']
+        if x == '0':
+            return self.W[0].get_value()
+        return np.dot(self.W[0].get_value(),self.W[1].get_value())
+
+    def get_input_space(self):
+        return self.rbms[0].get_input_space()
+
+    def get_output_space(self):
+        return VectorSpace(self.num_classes)
 
     def reset_rng(self):
         self.rng = np.random.RandomState([1,2,3])
@@ -165,6 +186,9 @@ class DBM(Model):
             else:
                 self.Y_chains = None
 
+        if hasattr(self, 'init_beta') and self.init_beta is not None:
+            self.beta = sharedX( np.zeros( self.bias_vis.get_value().shape) + self.init_beta, name = 'beta')
+
 
     def make_chains(self, bias):
         """ make the shared variable representing a layer of
@@ -193,7 +217,7 @@ class DBM(Model):
     def set_monitoring_channel_prefix(self, prefix):
         self.monitoring_channel_prefix = prefix
 
-    def get_monitoring_channels(self, V):
+    def get_monitoring_channels(self, V, Y =  None):
 
         try:
             self.compile_mode()
@@ -316,7 +340,7 @@ class DBM(Model):
                 prob = ip.infer_H_hat_one_sided(other_H_hat = ipt, W = self.W[-1], b = self.bias_hid[-1])
             else:
                 prob = ip.infer_H_hat_two_sided(H_hat_below = ipt, H_hat_above = rval[self.Y_chains],
-                        W_below = self.W[i], W_above = self.W_class, b = self.bias_hid[-1])
+                        W_below = self.W[-1], W_above = self.W_class, b = self.bias_hid[-1])
 
             sample = sample_from(prob)
 
@@ -345,7 +369,7 @@ class DBM(Model):
 
         rval_H = [ H_sample for H_sample in H_samples ]
 
-        assert (Y_sample is None) == (self.num_samples == 0)
+        assert (Y_sample is None) == (self.num_classes == 0)
 
         for i in xrange(0,len(rval_H),2):
             #Special case for layer 0--it is attached to the input
@@ -442,7 +466,10 @@ class DBM(Model):
 
         obj = self.expected_energy(V_hat = V_sample, H_hat = H_rao_blackwell, Y_hat = Y_rao_blackwell)
 
-        constants = list(set(H_rao_blackwell).union([V_sample, Y_rao_blackwell]))
+        constants = list(set(H_rao_blackwell).union([V_sample]))
+
+        if Y_rao_blackwell is not None:
+            constants = constants.union(Y_rao_blackwell)
 
         params = self.get_params()
 
@@ -477,6 +504,9 @@ class DBM(Model):
         rval = list(rval)
 
         assert self.bias_hid[0] in rval
+
+        if hasattr(self,'beta'):
+            rval.append(self.beta)
 
         return rval
 
@@ -517,6 +547,13 @@ class DBM(Model):
 
         for rbm in self.rbms:
             rbm.censor_updates(updates)
+
+        if hasattr(self,'beta') and self.beta in updates:
+            #todo--censorship cache, etc.
+            min_beta = 1e-4
+            if hasattr(self,'min_beta') and self.min_beta is not None:
+                min_beta = self.min_beta
+            updates[self.beta] = T.clip(updates[self.beta],min_beta,1e6)
 
     def random_design_matrix(self, batch_size, theano_rng):
         raise NotImplementedError()
@@ -585,7 +622,7 @@ class DBM(Model):
         assert len(total.type.broadcastable) == 0
 
         if Y_hat is not None:
-            weights_contrib = (T.dot(H_hat[-1], self.model.W_class) * Y_hat).sum(axis=1).mean()
+            weights_contrib = (T.dot(H_hat[-1], self.W_class) * Y_hat).sum(axis=1).mean()
             bias_contrib = T.dot(T.mean(Y_hat,axis=0), self.bias_class)
             total = total + weights_contrib + bias_contrib
 
@@ -663,7 +700,9 @@ class DBM(Model):
 
         if Y_hat is not None:
             weights_contrib = (T.dot(H_hat[-1], self.W_class) * Y_hat).sum(axis=1)
-            bias_contrib = T.dot(H_hat[-1], Y_hat)
+            assert weights_contrib.ndim == 1
+            bias_contrib = T.dot(Y_hat, self.bias_class)
+            assert bias_contrib.ndim == 1
             total = total + weights_contrib + bias_contrib
 
         assert len(total.type.broadcastable) == 1
@@ -714,8 +753,42 @@ class DBM(Model):
             self.deploy_mode()
 
     def learn(self, dataset, batch_size):
-        raise NotImplementedError("Not yet supported-- current project does not require DBM to learn on its own")
-        self.learn_mini_batch(dataset.get_batch_design(batch_size))
+        #TODO [for IG, not LY]: always uses exhaustive iteration, regardless of how the dataset is configured.
+        #clean this up a bit
+
+        warnings.warn(" This method isn't tested yet")
+
+        def make_iterator():
+            self.iterator = dataset.iterator(
+                    mode = 'sequential',
+                    batch_size = batch_size,
+                    targets = self.dbm.num_classes > 0)
+
+        if self.iterator is None:
+            self.batch_size = batch_size
+            self.dataset = dataset
+            self.register_names_to_del(['dataset','iterator'])
+            make_iterator()
+        else:
+            assert dataset is self.dataset
+            assert batch_size == self.batch_size
+        if self.num_classes > 0:
+            try:
+                X, Y = self.iterator.next()
+            except StopIteration:
+                print 'Finished a dataset-epoch'
+                make_iterator()
+                X, Y = self.iterator.next()
+        else:
+            Y = None
+            try:
+                X = self.iterator.next()
+            except StopIteration:
+                print 'Finished a dataset-epoch'
+                make_iterator()
+                X = self.iterator.next()
+
+        self.learn_mini_batch(X,Y)
 
     def learn_mini_batch(self, X):
         raise NotImplementedError("Not yet supported-- current project does not require DBM to learn on its own")
@@ -734,24 +807,10 @@ class InferenceProcedure:
 
         Variational inference
 
-        """
+    """
 
-    def get_monitoring_channels(self, V, model):
-
-        rval = {}
-
-        if self.monitor_kl or self.monitor_em_functional:
-            obs_history = self.infer(V, return_history = True)
-
-            for i in xrange(1, 2 + len(self.h_new_coeff_schedule)):
-                obs = obs_history[i-1]
-                if self.monitor_kl:
-                    rval['trunc_KL_'+str(i)] = self.truncated_KL(V, model, obs).mean()
-                if self.monitor_em_functional:
-                    rval['em_functional_'+str(i)] = self.em_functional(V, model, obs).mean()
-
-        return rval
-
+    def get_monitoring_channels(self):
+        raise NotImplementedError()
 
     def __init__(self, layer_schedule = None, monitor_kl = False):
         self.autonomous = False
@@ -761,10 +820,8 @@ class InferenceProcedure:
 
     def register_model(self, model):
         self.model = model
-        if self.model.num_classes > 0:
-            raise NotImplementedError("This inference procedure doesn't support using a class variable as part of the DBM yet")
 
-    def truncated_KL(self, V, obs, no_v_bias = False):
+    def truncated_KL(self, V, obs, Y = None, no_v_bias = False):
         """ KL divergence between variation and true posterior, dropping terms that don't
             depend on the variational parameters
 
@@ -777,6 +834,8 @@ class InferenceProcedure:
             <truncated version>        = -sum_h Q(h) log P( h, v) + sum_h Q(h) log Q(h)
                                        = -sum_h Q(h) log exp( -E (h,v)) + sum_h Q(h) log Z + sum_H Q(h) log Q(h)
             <truncated version>        = sum_h Q(h) E(h, v) + sum_h Q(h) log Q(h)
+
+            this comment was written before adding support for Y
         """
 
         H_hat = obs['H_hat']
@@ -787,13 +846,12 @@ class InferenceProcedure:
 
         entropy_term = - self.model.entropy_h(H_hat = H_hat)
         assert len(entropy_term.type.broadcastable) == 1
-        energy_term = self.model.expected_energy_batch(V_hat = V, H_hat = H_hat, no_v_bias = no_v_bias)
+        energy_term = self.model.expected_energy_batch(V_hat = V, H_hat = H_hat, Y_hat = Y, no_v_bias = no_v_bias)
         assert len(energy_term.type.broadcastable) == 1
 
         KL = entropy_term + energy_term
 
         return KL
-
 
     def infer_H_hat_two_sided(self, H_hat_below, W_below, H_hat_above, W_above, b):
 
@@ -807,6 +865,11 @@ class InferenceProcedure:
 
     def infer_H_hat_one_sided(self, other_H_hat, W, b):
         """ W should be arranged such that other_H_hat.shape[1] == W.shape[0] """
+
+        if W is self.model.W[-1]:
+            assert self.model.num_classes == 0
+            #shouldn't be using one-sided inference when there is also top-down influence from
+            #labels
 
         dot = T.dot(other_H_hat, W)
         presigmoid = dot + b
@@ -836,6 +899,9 @@ class InferenceProcedure:
                                 returns a dictionary containing the final
                                 variational parameters
         """
+
+        if self.model.num_classes > 0:
+            raise NotImplementedError("This inference procedure doesn't support using a class variable as part of the DBM yet")
 
         H   =    self.init_H_hat(V)
 
@@ -913,6 +979,12 @@ class InferenceProcedure:
             H_hat.append(mat)
 
         return H_hat
+
+    def init_Y_hat(self, V):
+        value = T.nnet.sigmoid(self.model.bias_class)
+        mat = T.alloc(value, V.shape[0], value.shape[0])
+
+        return mat
 
 def load_matlab_dbm(path):
     """ Loads a two layer DBM stored in the format used by Ruslan Salakhutdinov's

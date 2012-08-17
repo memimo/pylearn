@@ -209,7 +209,11 @@ class S3C(Model, Block):
                        init_unit_W = None,
                        debug_m_step = False,
                        print_interval = 10000,
-                       stop_after_hack = None):
+                       stop_after_hack = None,
+                       set_B_to_marginal_precision = False,
+                       init_momentum = None,
+                       final_momentum = None,
+                       momentum_saturation_example = None):
         """"
         nvis: # of visible units
         nhid: # of hidden units
@@ -266,11 +270,16 @@ class S3C(Model, Block):
         Block.__init__(self)
 
         self.debug_m_step = debug_m_step
+        self.set_B_to_marginal_precision = set_B_to_marginal_precision
 
         self.monitoring_channel_prefix = ''
 
         if init_unit_W is not None and not init_unit_W:
             assert not constrain_W_norm
+
+        self.init_momentum = init_momentum
+        self.final_momentum = final_momentum
+        self.momentum_saturation_example = momentum_saturation_example
 
         self.seed = seed
         self.reset_rng()
@@ -424,6 +433,11 @@ class S3C(Model, Block):
 
         self.redo_everything()
 
+
+    def infer(self, V, return_history = False):
+        return self.e_step.variational_inference( V, return_history )
+
+
     def reset_rng(self):
         if self.seed is None:
             self.rng = np.random.RandomState([1.,2.,3.])
@@ -458,6 +472,13 @@ class S3C(Model, Block):
             warnings.warn('M step debugging activated-- this is only valid for certain settings, and causes a performance slowdown.')
             self.energy_functional_diff = sharedX(0.)
 
+        if self.momentum_saturation_example is not None:
+            self.params_to_incs = {}
+
+            for param in self.get_params():
+                self.params_to_incs[param] = sharedX(np.zeros(param.get_value().shape), name = param.name + '_inc')
+
+            self.momentum = sharedX(self.init_momentum, name='momentum')
 
         if self.monitor_norms:
             self.debug_norms = sharedX(np.zeros(self.nhid))
@@ -499,97 +520,101 @@ class S3C(Model, Block):
     def set_monitoring_channel_prefix(self, prefix):
         self.monitoring_channel_prefix = prefix
 
-    def get_monitoring_channels(self, V):
-            try:
-                self.compile_mode()
+    def get_monitoring_channels(self, V, Y = None):
+        assert Y is None #just there for method signature compatibility
+        try:
+            self.compile_mode()
 
-                if self.m_step != None:
-                    rval = self.m_step.get_monitoring_channels(V, self)
-                else:
-                    rval = {}
+            if self.m_step != None:
+                rval = self.m_step.get_monitoring_channels(V, self)
+            else:
+                rval = {}
 
-                from_e_step = self.e_step.get_monitoring_channels(V)
+            if self.momentum_saturation_example is not None:
+                rval['momentum'] = self.momentum
 
-                rval.update(from_e_step)
+            from_e_step = self.e_step.get_monitoring_channels(V)
 
-                if self.debug_m_step:
-                    rval['m_step_diff'] = self.energy_functional_diff
+            rval.update(from_e_step)
 
-                monitor_stats = len(self.monitor_stats) > 0
+            if self.debug_m_step:
+                rval['m_step_diff'] = self.energy_functional_diff
 
-                if monitor_stats or self.monitor_functional:
+            monitor_stats = len(self.monitor_stats) > 0
 
-                    obs = self.get_hidden_obs(V)
+            if monitor_stats or self.monitor_functional:
 
-                    needed_stats = set(self.monitor_stats)
+                obs = self.get_hidden_obs(V)
 
-                    if self.monitor_functional:
-                        needed_stats = needed_stats.union(S3C.expected_log_prob_vhs_needed_stats())
+                needed_stats = set(self.monitor_stats)
 
-                    stats = SufficientStatistics.from_observations( needed_stats = needed_stats,
-                                                                V = V, ** obs )
+                if self.monitor_functional:
+                    needed_stats = needed_stats.union(S3C.expected_log_prob_vhs_needed_stats())
 
-                    H_hat = obs['H_hat']
-                    S_hat = obs['S_hat']
-                    var_s0_hat = obs['var_s0_hat']
-                    var_s1_hat = obs['var_s1_hat']
+                stats = SufficientStatistics.from_observations( needed_stats = needed_stats,
+                                                            V = V, ** obs )
 
-                    if self.monitor_functional:
-                        energy_functional = self.energy_functional(H_hat = H_hat, S_hat = S_hat, var_s0_hat = var_s0_hat,
-                                var_s1_hat = var_s1_hat, stats = stats)
+                H_hat = obs['H_hat']
+                S_hat = obs['S_hat']
+                var_s0_hat = obs['var_s0_hat']
+                var_s1_hat = obs['var_s1_hat']
 
-                        rval['energy_functional'] = energy_functional
+                if self.monitor_functional:
+                    energy_functional = self.energy_functional(H_hat = H_hat, S_hat = S_hat, var_s0_hat = var_s0_hat,
+                            var_s1_hat = var_s1_hat, stats = stats)
 
-                    if monitor_stats:
-                        for stat in self.monitor_stats:
-                            stat_val = stats.d[stat]
+                    rval['energy_functional'] = energy_functional
 
-                            rval[stat+'_min'] = T.min(stat_val)
-                            rval[stat+'_mean'] = T.mean(stat_val)
-                            rval[stat+'_max'] = T.max(stat_val)
-                        #end for stat
-                    #end if monitor_stats
-                #end if monitor_stats or monitor_functional
+                if monitor_stats:
+                    for stat in self.monitor_stats:
+                        stat_val = stats.d[stat]
 
-                if len(self.monitor_params) > 0:
-                    for param in self.monitor_params:
-                        param_val = getattr(self, param)
+                        rval[stat+'_min'] = T.min(stat_val)
+                        rval[stat+'_mean'] = T.mean(stat_val)
+                        rval[stat+'_max'] = T.max(stat_val)
+                    #end for stat
+                #end if monitor_stats
+            #end if monitor_stats or monitor_functional
+
+            if len(self.monitor_params) > 0:
+                for param in self.monitor_params:
+                    param_val = getattr(self, param)
 
 
-                        rval[param+'_min'] = full_min(param_val)
-                        rval[param+'_mean'] = T.mean(param_val)
+                    rval[param+'_min'] = full_min(param_val)
+                    rval[param+'_mean'] = T.mean(param_val)
 
-                        mx = full_max(param_val)
-                        assert len(mx.type.broadcastable) == 0
-                        rval[param+'_max'] = mx
+                    mx = full_max(param_val)
+                    assert len(mx.type.broadcastable) == 0
+                    rval[param+'_max'] = mx
 
-                        if param == 'mu':
-                            abs_mu = abs(self.mu)
-                            rval['mu_abs_min'] = full_min(abs_mu)
-                            rval['mu_abs_mean'] = T.mean(abs_mu)
-                            rval['mu_abs_max'] = full_max(abs_mu)
+                    if param == 'mu':
+                        abs_mu = abs(self.mu)
+                        rval['mu_abs_min'] = full_min(abs_mu)
+                        rval['mu_abs_mean'] = T.mean(abs_mu)
+                        rval['mu_abs_max'] = full_max(abs_mu)
 
-                        if param == 'W':
-                            norms = theano_norms(self.W)
-                            rval['W_norm_min'] = full_min(norms)
-                            rval['W_norm_mean'] = T.mean(norms)
-                            rval['W_norm_max'] = T.max(norms)
+                    if param == 'W':
+                        norms = theano_norms(self.W)
+                        rval['W_norm_min'] = full_min(norms)
+                        rval['W_norm_mean'] = T.mean(norms)
+                        rval['W_norm_max'] = T.max(norms)
 
-                if self.monitor_norms:
-                    rval['post_solve_norms_min'] = T.min(self.debug_norms)
-                    rval['post_solve_norms_max'] = T.max(self.debug_norms)
-                    rval['post_solve_norms_mean'] = T.mean(self.debug_norms)
+            if self.monitor_norms:
+                rval['post_solve_norms_min'] = T.min(self.debug_norms)
+                rval['post_solve_norms_max'] = T.max(self.debug_norms)
+                rval['post_solve_norms_mean'] = T.mean(self.debug_norms)
 
-                new_rval = {}
+            new_rval = {}
 
-                for key in rval:
-                    new_rval[self.monitoring_channel_prefix+key] = rval[key]
+            for key in rval:
+                new_rval[self.monitoring_channel_prefix+key] = rval[key]
 
-                rval = new_rval
+            rval = new_rval
 
-                return rval
-            finally:
-                self.deploy_mode()
+            return rval
+        finally:
+            self.deploy_mode()
 
 
     def __call__(self, V):
@@ -857,8 +882,9 @@ class S3C(Model, Block):
                 self.censored_updates[param] = self.censored_updates[param].union(set([updates[param]]))
 
 
-    def random_design_matrix(self, batch_size, theano_rng,
-                            H_sample = None, S_sample = None):
+    def random_design_matrix(self, batch_size, theano_rng = None,
+                            H_sample = None, S_sample = None,
+                            full_sample = True):
         """
             H_sample: a matrix of values of H
                       if none is provided, samples one from the prior
@@ -866,6 +892,11 @@ class S3C(Model, Block):
                         to specific hidden units look like, or when sampling
                         from a larger model that s3c is part of)
         """
+
+        if theano_rng is None:
+            assert H_sample is not None
+            assert S_sample is not None
+            assert full_sample == False
 
         if not hasattr(self,'p'):
             self.make_pseudoparams()
@@ -892,10 +923,12 @@ class S3C(Model, Block):
 
         V_mean = T.dot(final_hs_sample, self.W.T)
 
-        warnings.warn('showing conditional means (given sampled h and s) on visible units rather than true samples')
-        return V_mean
 
-        V_sample = theano_rng.normal( size = V_mean.shape, avg = V_mean, std = self.B)
+        if not full_sample:
+            warnings.warn('showing conditional means (given sampled h and s) on visible units rather than true samples')
+            return V_mean
+
+        V_sample = theano_rng.normal( size = V_mean.shape, avg = V_mean, std = T.sqrt(1./self.B))
 
         return V_sample
 
@@ -1181,6 +1214,14 @@ class S3C(Model, Block):
             self.deploy_mode()
 
     def learn(self, dataset, batch_size):
+
+        if self.set_B_to_marginal_precision:
+            assert not self.tied_B
+
+            var = dataset.X.var(axis=0)
+
+            self.B_driver.set_value( 1. / (var + .01))
+
         if self.stop_after_hack is not None:
             if self.monitor.examples_seen > self.stop_after_hack:
                 print 'stopping due to too many examples seen'
@@ -1213,6 +1254,11 @@ class S3C(Model, Block):
     def learn_mini_batch(self, X):
 
         self.learn_func(X)
+
+        if self.momentum_saturation_example is not None:
+            alpha = float(self.monitor.get_examples_seen()) / float(self.momentum_saturation_example)
+            alpha = min(alpha, 1.0)
+            self.momentum.set_value(np.cast[config.floatX]( (1.-alpha) * self.init_momentum + alpha * self.final_momentum))
 
         if self.monitor.get_examples_seen() % self.print_interval == 0:
             self.print_status()
@@ -1321,24 +1367,52 @@ class E_Step(object):
         rval = {}
 
         if self.autonomous:
-            if self.monitor_kl or self.monitor_energy_functional or self.monitor_s_mag:
+            if self.monitor_kl or self.monitor_energy_functional or self.monitor_s_mag \
+                    or self.monitor_ranges:
                 obs_history = self.model.get_hidden_obs(V, return_history = True)
                 assert isinstance(obs_history, list)
+
+
+                final_vals = obs_history[-1]
+                S_hat = final_vals['S_hat']
+                H_hat = final_vals['H_hat']
+                HS = H_hat * S_hat
+
+                hs_max = T.max(HS,axis=0)
+                hs_min = T.min(HS,axis=0)
+
+                hs_range = hs_max - hs_min
+
+                rval['hs_range_min'] = T.min(hs_range)
+                rval['hs_range_mean'] = T.mean(hs_range)
+                rval['hs_range_max'] = T.max(hs_range)
+
+                h_max = T.max(H_hat,axis=0)
+                h_min = T.min(H_hat,axis=0)
+
+                h_range = h_max - h_min
+
+                rval['h_range_min'] = T.min(h_range)
+                rval['h_range_mean'] = T.mean(h_range)
+                rval['h_range_max'] = T.max(h_range)
+
+
+
 
                 for i in xrange(1, 2 + len(self.h_new_coeff_schedule)):
                     obs = obs_history[i-1]
                     if self.monitor_kl:
                         if i == 1:
-                            rval['trunc_KL_'+str(i)] = self.truncated_KL(V, obs).mean()
+                            rval['trunc_KL_'+str(i)] = self.truncated_KL(V, obs =  obs).mean()
                         else:
                             coeff = self.h_new_coeff_schedule[i-2]
-                            rval['trunc_KL_'+str(i)+'.2(h '+str(coeff)+')'] = self.truncated_KL(V,obs).mean()
+                            rval['trunc_KL_'+str(i)+'.2(h '+str(coeff)+')'] = self.truncated_KL(V,obs = obs).mean()
                             obs = {}
                             for key in obs_history[i-1]:
                                 obs[key] = obs_history[i-1][key]
                             obs['H_hat'] = obs_history[i-2]['H_hat']
                             coeff = self.s_new_coeff_schedule[i-2]
-                            rval['trunc_KL_'+str(i)+'.1(s '+str(coeff)+')'] = self.truncated_KL(V,obs).mean()
+                            rval['trunc_KL_'+str(i)+'.1(s '+str(coeff)+')'] = self.truncated_KL(V,obs = obs).mean()
                             obs = obs_history[i-1]
                     if self.monitor_energy_functional:
                         rval['energy_functional_'+str(i)] = self.energy_functional(V, self.model, obs).mean()
@@ -1354,7 +1428,8 @@ class E_Step(object):
                        monitor_kl = False,
                        monitor_energy_functional = False,
                        monitor_s_mag = False,
-                       rho = 0.5):
+                       rho = 0.5,
+                       monitor_ranges = False):
         """Parameters
         --------------
         h_new_coeff_schedule:
@@ -1372,6 +1447,10 @@ class E_Step(object):
                     i.e. it will default to no damping beyond the reflection clipping
         clip_reflections, rho : if clip_reflections is true, the update to S_hat[i,j] is
             bounded on one side by - rho * S_hat[i,j] and unbounded on the other side
+        monitor_ranges: if True, adds the channels h_range_<min,mean,max> and
+                        hs_range_<min,mean_max>  showing the amounts that different
+                        h_hat and s_hat variational parameters change across the
+                        monitoring dataset
         """
 
         self.autonomous = True
@@ -1396,6 +1475,7 @@ class E_Step(object):
         self.h_new_coeff_schedule = h_new_coeff_schedule
         self.monitor_kl = monitor_kl
         self.monitor_energy_functional = monitor_energy_functional
+        self.monitor_ranges = monitor_ranges
 
         if self.autonomous:
             self.rho = as_floatX(rho)
@@ -1428,9 +1508,12 @@ class E_Step(object):
     def register_model(self, model):
         self.model = model
 
-    def truncated_KL(self, V, obs):
+    def truncated_KL(self, V, Y = None, obs = None):
         """ KL divergence between variation and true posterior, dropping terms that don't
             depend on the variational parameters """
+
+        assert Y is None
+        assert obs is not None
 
         H_hat = obs['H_hat']
         var_s0_hat = obs['var_s0_hat']
@@ -1734,6 +1817,7 @@ class Grad_M_Step:
     """
 
     def __init__(self, learning_rate = None, B_learning_rate_scale  = 1,
+            alpha_learning_rate_scale = 1.,
             W_learning_rate_scale = 1, p_penalty = 0.0, B_penalty = 0.0, alpha_penalty = 0.0):
 
         self.autonomous = True
@@ -1746,6 +1830,7 @@ class Grad_M_Step:
 
         self.B_learning_rate_scale = np.cast[config.floatX](float(B_learning_rate_scale))
         self.W_learning_rate_scale = np.cast[config.floatX](float(W_learning_rate_scale))
+        self.alpha_learning_rate_scale = np.cast[config.floatX](float(alpha_learning_rate_scale))
         self.p_penalty = as_floatX(p_penalty)
         self.B_penalty = as_floatX(B_penalty)
         self.alpha_penalty = as_floatX(alpha_penalty)
@@ -1775,31 +1860,40 @@ class Grad_M_Step:
                 #can't use *= since this is a numpy ndarray now
                 learning_rate = learning_rate * self.B_learning_rate_scale
 
-            if param is model.W and model.constrain_W_norm:
-                #project the gradient into the tangent space of the unit hypersphere
-                #see "On Gradient Adaptation With Unit Norm Constraints"
-                #this is the "true gradient" method on a sphere
-                #it computes the gradient, projects the gradient into the tangent space of the sphere,
-                #then moves a certain distance along a geodesic in that direction
+            if param is model.alpha:
+                learning_rate = learning_rate * self.alpha_learning_rate_scale
 
-                g_k = learning_rate * grad
+            if model.momentum_saturation_example is None:
+                if param is model.W and model.constrain_W_norm:
+                    #project the gradient into the tangent space of the unit hypersphere
+                    #see "On Gradient Adaptation With Unit Norm Constraints"
+                    #this is the "true gradient" method on a sphere
+                    #it computes the gradient, projects the gradient into the tangent space of the sphere,
+                    #then moves a certain distance along a geodesic in that direction
 
-                h_k = g_k -  (g_k*model.W).sum(axis=0) * model.W
+                    g_k = learning_rate * grad
 
-                theta_k = T.sqrt(1e-8+T.sqr(h_k).sum(axis=0))
+                    h_k = g_k -  (g_k*model.W).sum(axis=0) * model.W
 
-                u_k = h_k / theta_k
+                    theta_k = T.sqrt(1e-8+T.sqr(h_k).sum(axis=0))
 
-                updates[model.W] = T.cos(theta_k) * model.W + T.sin(theta_k) * u_k
+                    u_k = h_k / theta_k
 
+                    updates[model.W] = T.cos(theta_k) * model.W + T.sin(theta_k) * u_k
+
+                else:
+                    pparam = param
+
+                    inc = learning_rate * grad
+
+                    updated_param = pparam + inc
+
+                    updates[param] = updated_param
             else:
-                pparam = param
-
-                inc = learning_rate * grad
-
-                updated_param = pparam + inc
-
-                updates[param] = updated_param
+                #use momentum
+                inc = model.params_to_incs[param]
+                updates[inc] = model.momentum * inc + learning_rate * grad
+                updates[param] = param + inc
 
         return updates
 

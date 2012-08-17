@@ -112,11 +112,12 @@ class Monitor(object):
                 # make sure the iterator gave us the right size
                 # the averaging code assumes all batches are the same size
                 # assert X.shape[0] == self._batch_size
-                self.run_prereqs(X)
                 if self.require_label:
                     X, y = X
+                    self.run_prereqs(X,y)
                     self.accum(X, y)
                 else:
+                    self.run_prereqs(X)
                     self.accum(X)
                 count += 1
 
@@ -140,9 +141,9 @@ class Monitor(object):
 
                 print "\t%s: %s" % (channel_name, val_str)
 
-    def run_prereqs(self, X):
+    def run_prereqs(self, X, y = None):
         for prereq in self.prereqs:
-            prereq(X)
+            prereq(X,y)
 
 
     def get_batches_seen(self):
@@ -226,11 +227,13 @@ class Monitor(object):
                         ' but is driven by an expression with type ' + \
                         updates[key].dtype)
         if self.require_label:
-            self.accum = function([X, Y], givens=givens, updates=updates)
+            #some code may be written in terms of Y, but the subclasses in use might not
+            #actually return expressions involving Y, so we disable the unused_input error
+            self.accum = function([X, Y], givens=givens, updates=updates, on_unused_input = 'ignore')
         else:
             self.accum = function([X], givens=givens, updates=updates)
         t2 = time.time()
-        print "graph size: ",len(self.accum.maker.env.toposort())
+        print "graph size: ",len(self.accum.maker.fgraph.toposort())
         print "took "+str(t2-t1)+" seconds"
         final_names = dir(self)
         self.register_names_to_del([name for name in final_names
@@ -289,6 +292,7 @@ class Monitor(object):
             The display name in the monitor.
         ipt: tensor_like
             The symbolic tensor which should be clamped to the data.
+            (or a (features,targets) list/tuple containing two symbolic tensors)
         val: tensor_like
             The value (function of `ipt`) to be tracked.
         """
@@ -297,7 +301,12 @@ class Monitor(object):
             raise ValueError("Tried to create the same channel twice (%s)" %
                              name)
         if isinstance(ipt, (list, tuple)):
+            if self.dataset is not None:
+                if not self.dataset.has_targets():
+                    raise ValueError("Tried to create a channel ("+name \
+                            +") that uses targets, but monitoring dataset has no targets")
             self.require_label = True
+            assert len(ipt) == 2
         self.channels[name] = MonitorChannel(ipt, val, name, prereqs)
         self._dirty = True
 
@@ -361,6 +370,8 @@ class MonitorChannel(object):
         self.graph_input = graph_input
         self.val = val
         self.val_shared = sharedX(0.0, name + "_tracker")
+        if not hasattr(val,'dtype'):
+            raise TypeError('Monitor channel '+name+' has value of type '+str(type(val)))
         if val.dtype != self.val_shared.dtype:
             raise ValueError('monitor channels are expected to have dtype ' \
                     +str(self.val_shared.dtype) + ' but "'+name+'" has dtype '\
