@@ -10,8 +10,8 @@ class TFD(dense_design_matrix.DenseDesignMatrix):
 
     mapper = {'unlabeled': 0, 'train': 1, 'valid': 2, 'test': 3}
 
-    def __init__(self, which_set, fold = 0, image_size = 48, 
-                 example_range = None, center = False, 
+    def __init__(self, which_set, fold = 0, image_size = 48,
+                 example_range = None, center = False,
                  shuffle=False, rng=None, seed=132987):
         """
         Creates a DenseDesignMatrix object for the Toronto Face Dataset.
@@ -54,15 +54,20 @@ class TFD(dense_design_matrix.DenseDesignMatrix):
             rng = rng if rng else np.random.RandomState(seed)
             rand_idx = rng.permutation(len(data_x))
             data_x = data_x[rand_idx]
- 
+
         # get labels
         if which_set != 'unlabeled':
             data_y = data['labs_ex'][set_indices]
-            data_y = data_y[ex_range]
+            data_y = data_y[ex_range] -1
+
+            data_y_identity = data['labs_id'][set_indices]
+            data_y_identity = data_y_identity[ex_range]
             if shuffle:
                 data_y = data_y[rand_idx]
+                data_y_identity = data_y_identity[rand_idx]
         else:
             data_y = None
+            data_y_identity = None
 
         # create view converting for retrieving topological view
         view_converter = dense_design_matrix.DefaultViewConverter((image_size, image_size, 1))
@@ -72,3 +77,4 @@ class TFD(dense_design_matrix.DenseDesignMatrix):
 
         assert not np.any(np.isnan(self.X))
 
+        self.y_identity = data_y_identity

@@ -766,6 +766,7 @@ class ZCA(Preprocessor):
             eigv = eigv[:, self.n_drop_components:]
         self.P_ = np.dot(eigv * np.sqrt(1.0 / (eigs + self.filter_bias)),
                          eigv.T)
+        #self.P_ = eigv * np.sqrt(1.0 / (eigs + self.filter_bias))
         # print 'zca components'
         # print np.square(self.P_).sum(axis=0)
         assert not np.any(np.isnan(self.P_))

@@ -4,7 +4,7 @@ from pylearn2.datasets import dense_design_matrix
 from pylearn2.utils import serial
 
 class CIFAR100(dense_design_matrix.DenseDesignMatrix):
-    def __init__(self, which_set, center = False,
+    def __init__(self, which_set, center = False, scale = False,
             gcn = None):
 
         assert which_set in ['train','test']
@@ -24,6 +24,9 @@ class CIFAR100(dense_design_matrix.DenseDesignMatrix):
 
         if center:
             X -= 127.5
+        if scale:
+            X /= 255.
+
 
         self.gcn = gcn
         if gcn is not None:
