@@ -262,7 +262,8 @@ class VectorSpace(Space):
             rval = theano.sparse.csr_matrix(name=name)
         else:
             if batch_size == 1:
-                rval = T.row(name=name, dtype=dtype)
+                #rval = T.row(name=name, dtype=dtype)
+                rval = T.matrix(name=name, dtype=dtype)
             else:
                 rval = T.matrix(name=name, dtype=dtype)
 

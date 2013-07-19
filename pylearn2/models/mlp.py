@@ -796,7 +796,7 @@ class Softmax(Layer):
 
         for value in get_debug_values(state_below):
             if self.mlp.batch_size is not None and value.shape[0] != self.mlp.batch_size:
-                raise ValueError("state_below should have batch size "+str(self.dbm.batch_size)+" but has "+str(value.shape[0]))
+                raise ValueError("state_below should have batch size "+str(self.mlp.batch_size)+" but has "+str(value.shape[0]))
 
         self.desired_space.validate(state_below)
         assert state_below.ndim == 2
@@ -1195,7 +1195,7 @@ class Linear(Layer):
                  max_col_norm = None,
                  softmax_columns = False,
                  copy_input = 0,
-                 use_abs_loss = False, 
+                 use_abs_loss = False,
                  use_bias = True):
         """
 
@@ -1204,7 +1204,7 @@ class Linear(Layer):
         it is initialized to 0.
 
         """
-        
+
         if use_bias and init_bias is None:
             init_bias = 0.
 
@@ -1661,7 +1661,7 @@ class RectifiedLinear(Linear):
     def __init__(self, left_slope = 0.0, **kwargs):
         super(RectifiedLinear, self).__init__(**kwargs)
         self.left_slope = left_slope
-    
+
     def fprop(self, state_below):
         p = self._linear_part(state_below)
         p = p * (p > 0.) + self.left_slope * p * (p < 0.)

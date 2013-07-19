@@ -461,19 +461,24 @@ class FiniteDatasetIteratorPyTables(FiniteDatasetIterator):
 
         next_index = self._subset_iterator.next()
 
+        self._deprecated_interface = True
+        self._needs_cast = False
+        features, targets = self._raw_data
+        self.targets = True
+        self.topo = True
         if self._deprecated_interface:
             if isinstance(next_index, np.ndarray) and len(next_index) == 1:
                 next_index = next_index[0]
             if self._needs_cast:
                 features = numpy.cast[config.floatX](self._raw_data[next_index])
             else:
-                features = self._raw_data[next_index,:]
+                features = features[next_index,:]
             if self._topo:
                 if len(features.shape) != 2:
                     features = features.reshape((1, features.shape[0]))
                 features = self._dataset.get_topological_view(features)
             if self._targets:
-                targets = self._raw_targets[next_index,:]
+                targets = targets[next_index,:]
                 if len(targets.shape) != 2:
                     targets = targets.reshape((1, targets.shape[0]))
                 if self._targets_need_cast:
