@@ -278,11 +278,11 @@ class DenseDesignMatrix(Dataset):
             rval['X'] *= 255. / rval['compress_max']
             rval['X'] = N.cast['uint8'](rval['X'])
 
-        if self.design_loc is not None:
-            # TODO: Get rid of this logic, use custom array-aware picklers
-            # (joblib, custom pylearn2 serialization format).
-            N.save(self.design_loc, rval['X'])
-            del rval['X']
+        #if self.design_loc is not None:
+            ## TODO: Get rid of this logic, use custom array-aware picklers
+            ## (joblib, custom pylearn2 serialization format).
+            #N.save(self.design_loc, rval['X'])
+            #del rval['X']
 
         return rval
 

@@ -14,6 +14,7 @@ __maintainer__ = "Ian Goodfellow"
 __email__ = "goodfeli@iro"
 from pylearn2.datasets.dense_design_matrix import DenseDesignMatrix
 import numpy as np
+from theano import config
 from pylearn2.config import yaml_parse
 from pylearn2.datasets import control
 
@@ -87,7 +88,10 @@ class ZCA_Dataset(DenseDesignMatrix):
         preprocessor.invert()
         print '...done inverting'
 
+        self.X = np.cast[config.floatX](self.X)
         self.view_converter.set_axes(axes)
+        self.compress = False
+        self.design_loc = None
 
     def has_targets(self):
         return self.preprocessed_dataset.has_targets()
