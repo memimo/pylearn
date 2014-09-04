@@ -87,7 +87,7 @@ class WeightDecay(NullDataSpecsMixin, Cost):
             try:
                 return layer.get_weight_decay(coeff)
             except NotImplementedError:
-                if coef == 0.:
+                if coeff == 0.:
                     return 0.
                 else:
                     reraise_as(NotImplementedError(str(type(layer)) +
