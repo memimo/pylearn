@@ -25,6 +25,7 @@ from pylearn2.utils import safe_izip, wraps
 from pylearn2.utils.data_specs import is_flat_specs
 from pylearn2.utils.exc import reraise_as
 from pylearn2.utils.rng import make_np_rng
+import warnings
 
 # Make sure that the docstring uses restructured text list format.
 # If you change the module-level docstring, please re-run
@@ -705,7 +706,7 @@ def resolve_iterator_class(mode):
     return subset_iter_class
 
 
-class FiniteDatasetIterator(object):
+class FiniteDatasetIterator2(object):
     """
     A wrapper around subset iterators that actually retrieves
     data.
@@ -863,6 +864,199 @@ class FiniteDatasetIterator(object):
 
     def __next__(self):
         return self.next()
+
+    @property
+    @wraps(SubsetIterator.batch_size, assigned=(), updated=())
+    def batch_size(self):
+        return self._subset_iterator.batch_size
+
+    @property
+    @wraps(SubsetIterator.num_batches, assigned=(), updated=())
+    def num_batches(self):
+        return self._subset_iterator.num_batches
+
+    @property
+    @wraps(SubsetIterator.num_examples, assigned=(), updated=())
+    def num_examples(self):
+        return self._subset_iterator.num_examples
+
+    @property
+    @wraps(SubsetIterator.uneven, assigned=(), updated=())
+    def uneven(self):
+        return self._subset_iterator.uneven
+
+    @property
+    @wraps(SubsetIterator.stochastic, assigned=(), updated=())
+    def stochastic(self):
+        return self._subset_iterator.stochastic
+
+
+
+class FiniteDatasetIterator(object):
+    """
+    A wrapper around subset iterators that actually retrieves
+    data.
+    Parameters
+    ----------
+    dataset : `Dataset` object
+        The dataset over which to iterate.
+    data_specs : tuple
+        A `(space, source)` tuple. See :ref:`data_specs` for a full
+        description. Must not contain nested composite spaces.
+    subset_iterator : object
+        An iterator object that returns slice objects or lists of
+        examples, conforming to the interface specified by
+        :py:class:`SubsetIterator`.
+    return_tuple : bool, optional
+        Always return a tuple, even if there is exactly one source
+        of data being returned. Defaults to `False`.
+    convert : list of callables
+        A list of callables, in the same order as the sources
+        in `data_specs`, that will be called on the individual
+        source batches prior to any further processing.
+    Notes
+    -----
+    See the documentation for :py:class:`SubsetIterator` for
+    attribute documentation.
+    The dataset should provide a `get` method which accepts a tuple of source
+    identifiers and a list or slice of indexes and returns a tuple of batches
+    of examples, one for each source. The old interface using `get_data` is
+    deprecated and will become unsupported as of October 28, 2014.
+    """
+    def __init__(self, dataset, subset_iterator, data_specs=None,
+                 return_tuple=False, convert=None):
+        self._data_specs = data_specs
+        self._dataset = dataset
+        self._subset_iterator = subset_iterator
+        self._return_tuple = return_tuple
+
+        # Keep only the needed sources in self._raw_data.
+        # Remember what source they correspond to in self._source
+        assert is_flat_specs(data_specs)
+
+        dataset_space, dataset_source = self._dataset.get_data_specs()
+        assert is_flat_specs((dataset_space, dataset_source))
+
+        # the dataset's data spec is either a single (space, source) pair,
+        # or a pair of (non-nested CompositeSpace, non-nested tuple).
+        # We could build a mapping and call flatten(..., return_tuple=True)
+        # but simply putting spaces, sources and data in tuples is simpler.
+        if not isinstance(dataset_source, tuple):
+            dataset_source = (dataset_source,)
+
+        if not isinstance(dataset_space, CompositeSpace):
+            dataset_sub_spaces = (dataset_space,)
+        else:
+            dataset_sub_spaces = dataset_space.components
+        assert len(dataset_source) == len(dataset_sub_spaces)
+
+        space, source = data_specs
+        if not isinstance(source, tuple):
+            source = (source,)
+        if not isinstance(space, CompositeSpace):
+            sub_spaces = (space,)
+        else:
+            sub_spaces = space.components
+        assert len(source) == len(sub_spaces)
+
+        self._source = source
+        self._space = sub_spaces
+
+        # If `dataset` is incompatible with the new interface, fall back to the
+        # old interface
+        if not hasattr(self._dataset, 'get'):
+            warnings.warn("dataset is using the old iterator interface which "
+                          "is deprecated and will become officially "
+                          "unsupported as of October 28, 2014. The dataset "
+                          "should implement a `get` method respecting the new "
+                          "interface.")
+            all_data = self._dataset.get_data()
+            if not isinstance(all_data, tuple):
+                all_data = (all_data,)
+            self._raw_data = tuple(all_data[dataset_source.index(s)]
+                                   for s in source)
+
+        self._source = source
+
+        if convert is None:
+            self._convert = [None for s in source]
+        else:
+            assert len(convert) == len(source)
+            self._convert = convert
+
+        for i, (so, sp) in enumerate(safe_izip(source, sub_spaces)):
+            idx = dataset_source.index(so)
+            dspace = dataset_sub_spaces[idx]
+
+            init_fn = self._convert[i]
+            fn = init_fn
+
+            # If there is an init_fn, it is supposed to take
+            # care of the formatting, and it should be an error
+            # if it does not. If there was no init_fn, then
+            # the iterator will try to format using the generic
+            # space-formatting functions.
+            if init_fn is None:
+                # "dspace" and "sp" have to be passed as parameters
+                # to lambda, in order to capture their current value,
+                # otherwise they would change in the next iteration
+                # of the loop.
+                if fn is None:
+                    fn = (lambda batch, dspace=dspace, sp=sp:
+                          dspace.np_format_as(batch, sp))
+                else:
+                    fn = (lambda batch, dspace=dspace, sp=sp, fn_=fn:
+                          dspace.np_format_as(fn_(batch), sp))
+
+            self._convert[i] = fn
+
+    def __iter__(self):
+        return self
+
+    @wraps(SubsetIterator.next)
+    def next(self):
+        """
+        Retrieves the next batch of examples.
+        Returns
+        -------
+        next_batch : object
+            An object representing a mini-batch of data, conforming
+            to the space specified in the `data_specs` constructor
+            argument to this iterator. Will be a tuple if more
+            than one data source was specified or if the constructor
+            parameter `return_tuple` was `True`.
+        Raises
+        ------
+        StopIteration
+            When there are no more batches to return.
+        """
+        next_index = self._subset_iterator.next()
+
+        # If the dataset is incompatible with the new interface, fall back to
+        # the old one
+        if hasattr(self._dataset, 'get'):
+            rval = self._next(next_index)
+        else:
+            rval = self._fallback_next(next_index)
+
+        if not self._return_tuple and len(rval) == 1:
+            rval, = rval
+        return rval
+
+    def _next(self, next_index):
+        return tuple(
+            fn(batch) if fn else batch for batch, fn in
+            safe_izip(self._dataset.get(self._source, next_index),
+                      self._convert)
+        )
+
+    def _fallback_next(self, next_index):
+        # TODO: handle fancy-index copies by allocating a buffer and
+        # using np.take()
+        return tuple(
+            fn(data[next_index]) if fn else data[next_index]
+            for data, fn in safe_izip(self._raw_data, self._convert)
+        )
 
     @property
     @wraps(SubsetIterator.batch_size, assigned=(), updated=())
